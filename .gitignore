@@ -1,0 +1,13 @@
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.dSYM/
+*.DS_Store
+*.idea/
+
+tests/run
+build/

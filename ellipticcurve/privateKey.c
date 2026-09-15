@@ -21,8 +21,14 @@ static int fromSecret(const unsigned char *secret, starkecdsa_private_key **out)
     if (!secretInRange(secret)) {
         return STARKECDSA_ERROR_RANGE;
     }
-    if (!secp256k1_ec_seckey_verify((const secp256k1_context *)starkecdsaContext(), secret)) {
-        return STARKECDSA_ERROR_RANGE;
+    {
+        const secp256k1_context *ctx = (const secp256k1_context *)starkecdsaContext();
+        if (ctx == NULL) {
+            return STARKECDSA_ERROR_ENTROPY;
+        }
+        if (!secp256k1_ec_seckey_verify(ctx, secret)) {
+            return STARKECDSA_ERROR_RANGE;
+        }
     }
     key = (starkecdsa_private_key *)malloc(sizeof(*key));
     if (key == NULL) {
@@ -41,6 +47,7 @@ int starkecdsa_private_key_new(starkecdsa_private_key **out)
     if (out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     /* Rejection sampling: a draw at or above the order is discarded rather
        than reduced, which would bias the low end of the range. */
     for (attempts = 0; attempts < 64; attempts++) {
@@ -50,11 +57,11 @@ int starkecdsa_private_key_new(starkecdsa_private_key **out)
         }
         if (secretInRange(secret)) {
             status = fromSecret(secret, out);
-            memset(secret, 0, sizeof(secret));
+            starkecdsaScrub(secret, sizeof(secret));
             return status;
         }
     }
-    memset(secret, 0, sizeof(secret));
+    starkecdsaScrub(secret, sizeof(secret));
     return STARKECDSA_ERROR_ENTROPY;
 }
 
@@ -66,12 +73,13 @@ int starkecdsa_private_key_from_string(const char *hex, starkecdsa_private_key *
     if (hex == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaBytesFromHex(hex, secret, STARKECDSA_SECRET_BYTES);
     if (status != STARKECDSA_OK) {
         return status;
     }
     status = fromSecret(secret, out);
-    memset(secret, 0, sizeof(secret));
+    starkecdsaScrub(secret, sizeof(secret));
     return status;
 }
 
@@ -85,13 +93,14 @@ int starkecdsa_private_key_from_der(const unsigned char *der, size_t der_len, st
     if (der == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaDerReadPrivateKey(der, der_len, secret, storedPoint, &hasPoint);
     if (status != STARKECDSA_OK) {
-        memset(secret, 0, sizeof(secret));
+        starkecdsaScrub(secret, sizeof(secret));
         return status;
     }
     status = fromSecret(secret, out);
-    memset(secret, 0, sizeof(secret));
+    starkecdsaScrub(secret, sizeof(secret));
     if (status != STARKECDSA_OK) {
         return status;
     }
@@ -127,12 +136,14 @@ int starkecdsa_private_key_from_pem(const char *pem, starkecdsa_private_key **ou
     if (pem == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaPemRead(pem, PEM_LABEL, &der, &derLength);
     if (status != STARKECDSA_OK) {
         return status;
     }
     status = starkecdsa_private_key_from_der(der, derLength, out);
-    free(der);
+    /* the decoded DER carries the secret */
+    starkecdsa_free_secret(der, derLength);
     return status;
 }
 
@@ -141,6 +152,7 @@ int starkecdsa_private_key_to_string(const starkecdsa_private_key *key, char **o
     if (key == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     return starkecdsaAllocHexFromBytes(key->secret, STARKECDSA_SECRET_BYTES, out);
 }
 
@@ -152,6 +164,7 @@ int starkecdsa_private_key_to_der(const starkecdsa_private_key *key, unsigned ch
     if (key == NULL || out == NULL || out_len == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsa_private_key_public_key(key, &publicKey);
     if (status != STARKECDSA_OK) {
         return status;
@@ -170,12 +183,13 @@ int starkecdsa_private_key_to_pem(const starkecdsa_private_key *key, char **out)
     if (key == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsa_private_key_to_der(key, &der, &derLength);
     if (status != STARKECDSA_OK) {
         return status;
     }
     status = starkecdsaPemWrite(PEM_LABEL, der, derLength, out);
-    free(der);
+    starkecdsa_free_secret(der, derLength);
     return status;
 }
 
@@ -190,8 +204,9 @@ int starkecdsa_private_key_public_key(const starkecdsa_private_key *key, starkec
     if (key == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
     if (!secp256k1_ec_pubkey_create(ctx, &pubkey, key->secret)) {
         return STARKECDSA_ERROR_INTERNAL;
@@ -216,6 +231,6 @@ void starkecdsa_private_key_free(starkecdsa_private_key *key)
     if (key == NULL) {
         return;
     }
-    memset(key->secret, 0, STARKECDSA_SECRET_BYTES);
+    starkecdsaScrub(key->secret, STARKECDSA_SECRET_BYTES);
     free(key);
 }

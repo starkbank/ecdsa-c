@@ -37,26 +37,29 @@ int starkecdsa_sign(const unsigned char *message, size_t message_len,
     if (message == NULL && message_len > 0) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    if (out != NULL) {
+        *out = NULL;
+    }
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
 
     starkecdsaSha256(message, message_len, digest);
 
     status = starkecdsaRandomBytes(entropy, sizeof(entropy));
     if (status != STARKECDSA_OK) {
-        memset(digest, 0, sizeof(digest));
+        starkecdsaScrub(digest, sizeof(digest));
         return status;
     }
 
     if (!secp256k1_ecdsa_sign_recoverable(ctx, &recoverable, digest, key->secret,
                                           secp256k1_nonce_function_rfc6979, entropy)) {
-        memset(digest, 0, sizeof(digest));
-        memset(entropy, 0, sizeof(entropy));
+        starkecdsaScrub(digest, sizeof(digest));
+        starkecdsaScrub(entropy, sizeof(entropy));
         return STARKECDSA_ERROR_INTERNAL;
     }
-    memset(entropy, 0, sizeof(entropy));
-    memset(digest, 0, sizeof(digest));
+    starkecdsaScrub(entropy, sizeof(entropy));
+    starkecdsaScrub(digest, sizeof(digest));
 
     if (!secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, compact, &recoveryId, &recoverable)) {
         return STARKECDSA_ERROR_INTERNAL;
@@ -91,7 +94,7 @@ int starkecdsa_verify(const unsigned char *message, size_t message_len,
         return STARKECDSA_ERROR_ARGUMENT;
     }
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
 
     memcpy(compact, signature->r, STARKECDSA_SECRET_BYTES);
@@ -117,9 +120,9 @@ int starkecdsa_verify(const unsigned char *message, size_t message_len,
     starkecdsaSha256(message, message_len, digest);
 
     if (!secp256k1_ecdsa_verify(ctx, &normalized, digest, &pubkey)) {
-        memset(digest, 0, sizeof(digest));
+        starkecdsaScrub(digest, sizeof(digest));
         return STARKECDSA_ERROR_RANGE;
     }
-    memset(digest, 0, sizeof(digest));
+    starkecdsaScrub(digest, sizeof(digest));
     return STARKECDSA_OK;
 }

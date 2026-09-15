@@ -25,8 +25,9 @@ int starkecdsa_signature_to_der(const starkecdsa_signature *signature, int with_
     if (signature == NULL || out == NULL || out_len == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
     if (with_recovery_id && (signature->recoveryId < 0 || signature->recoveryId > 3)) {
         return STARKECDSA_ERROR_RANGE;
@@ -66,8 +67,9 @@ int starkecdsa_signature_from_der(const unsigned char *der, size_t der_len, int 
     if (der == NULL || out == NULL || der_len == 0) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
 
     if (with_recovery_id) {
@@ -84,6 +86,17 @@ int starkecdsa_signature_from_der(const unsigned char *der, size_t der_len, int 
 
     if (!secp256k1_ecdsa_signature_parse_der(ctx, &parsed, der, der_len)) {
         return STARKECDSA_ERROR_ENCODING;
+    }
+    /* parse_der accepts an out-of-range or negative integer and stores a value
+       that can never verify. Re-serialize and compare, as the Python reference
+       does, so such input is refused instead of silently rewritten. */
+    {
+        unsigned char reencoded[80];
+        size_t reencodedLength = sizeof(reencoded);
+        if (!secp256k1_ecdsa_signature_serialize_der(ctx, reencoded, &reencodedLength, &parsed)
+            || reencodedLength != der_len || memcmp(reencoded, der, der_len) != 0) {
+            return STARKECDSA_ERROR_RANGE;
+        }
     }
     if (!secp256k1_ecdsa_signature_serialize_compact(ctx, compact, &parsed)) {
         return STARKECDSA_ERROR_INTERNAL;
@@ -109,6 +122,7 @@ int starkecdsa_signature_to_base64(const starkecdsa_signature *signature, int wi
     if (signature == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsa_signature_to_der(signature, with_recovery_id, &der, &derLength);
     if (status != STARKECDSA_OK) {
         return status;
@@ -127,6 +141,7 @@ int starkecdsa_signature_from_base64(const char *base64, int with_recovery_id, s
     if (base64 == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaBytesFromBase64(base64, &der, &derLength);
     if (status != STARKECDSA_OK) {
         return status;

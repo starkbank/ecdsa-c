@@ -43,6 +43,9 @@ const void *starkecdsaContext(void);
 
 int starkecdsaRandomBytes(unsigned char *out, size_t length);
 
+/* A memset the optimizer cannot remove as a dead store (utils/binary.c). */
+void starkecdsaScrub(void *pointer, size_t length);
+
 /* Returns -1, 0 or 1 comparing two fixed-width big-endian values. */
 int starkecdsaCompareBytes(const unsigned char *left, const unsigned char *right, size_t length);
 int starkecdsaIsZeroBytes(const unsigned char *value, size_t length);

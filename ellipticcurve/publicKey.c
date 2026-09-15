@@ -18,7 +18,7 @@ static int fromPoint(const unsigned char *point, starkecdsa_public_key **out)
     starkecdsa_public_key *key;
 
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
     serialized[0] = 0x04;
     memcpy(serialized + 1, point, STARKECDSA_POINT_BYTES);
@@ -43,6 +43,7 @@ int starkecdsa_public_key_from_string(const char *hex, starkecdsa_public_key **o
     if (hex == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     cursor = hex;
     /* The sibling libraries print the encoded form as "0004" + X + Y. */
     if (strlen(cursor) == STARKECDSA_POINT_BYTES * 2 + 4 && strncmp(cursor, "0004", 4) == 0) {
@@ -70,8 +71,9 @@ int starkecdsa_public_key_from_compressed(const char *hex, starkecdsa_public_key
     if (hex == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
     if (strlen(hex) != sizeof(compressed) * 2) {
         return STARKECDSA_ERROR_ENCODING;
@@ -100,6 +102,7 @@ int starkecdsa_public_key_from_der(const unsigned char *der, size_t der_len, sta
     if (der == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaDerReadPublicKey(der, der_len, point);
     if (status != STARKECDSA_OK) {
         return status;
@@ -116,6 +119,7 @@ int starkecdsa_public_key_from_pem(const char *pem, starkecdsa_public_key **out)
     if (pem == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     status = starkecdsaPemRead(pem, PEM_LABEL, &der, &derLength);
     if (status != STARKECDSA_OK) {
         return status;
@@ -144,8 +148,9 @@ int starkecdsa_public_key_to_compressed(const starkecdsa_public_key *key, char *
     if (key == NULL || out == NULL) {
         return STARKECDSA_ERROR_ARGUMENT;
     }
+    *out = NULL;
     if (ctx == NULL) {
-        return STARKECDSA_ERROR_MEMORY;
+        return STARKECDSA_ERROR_ENTROPY;
     }
     uncompressed[0] = 0x04;
     memcpy(uncompressed + 1, key->point, STARKECDSA_POINT_BYTES);

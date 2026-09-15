@@ -63,7 +63,7 @@ ifeq ($(UNAME),Darwin)
 else
   SHARED_NAME = libstarkecdsa.so.$(ABI_VERSION)
   SHARED_FLAGS = -shared -Wl,-soname,$(SHARED_NAME) -Wl,--version-script,exports.map -Wl,--exclude-libs,ALL
-  NM_EXPORTS = nm -D --defined-only $(SHARED_NAME) | awk '{print $$3}'
+  NM_EXPORTS = nm -D --defined-only $(SHARED_NAME) | awk '$$2 != "A" {print $$3}' | sed 's/@@.*//'
   LDLIBS += -pthread
 endif
 

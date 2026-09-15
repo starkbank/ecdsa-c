@@ -283,6 +283,7 @@ static void testSignVerify(void)
 static void testMalformed(void)
 {
     starkecdsa_private_key *privateKey = NULL;
+    starkecdsa_private_key *rejected = NULL;
     starkecdsa_public_key *publicKey = NULL;
     starkecdsa_signature *signature = NULL;
     static const unsigned char zeroDer[] = {0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00};
@@ -303,21 +304,22 @@ static void testMalformed(void)
           starkecdsa_signature_from_der((const unsigned char *)"\x30\x44", 2, 0, &signature) != STARKECDSA_OK, NULL);
 
     check("a PEM with no key block is rejected",
-          starkecdsa_private_key_from_pem("not a pem at all", &privateKey) != STARKECDSA_OK, NULL);
+          starkecdsa_private_key_from_pem("not a pem at all", &rejected) != STARKECDSA_OK, NULL);
 
     check("a secret of zero is rejected",
-          starkecdsa_private_key_from_string("0000000000000000000000000000000000000000000000000000000000000000", &privateKey)
+          starkecdsa_private_key_from_string("0000000000000000000000000000000000000000000000000000000000000000", &rejected)
           != STARKECDSA_OK, NULL);
 
     /* N itself is out of range: valid secrets are [1, N-1]. */
     check("a secret equal to the curve order is rejected",
-          starkecdsa_private_key_from_string("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", &privateKey)
+          starkecdsa_private_key_from_string("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", &rejected)
           != STARKECDSA_OK, NULL);
 
     check("null arguments are rejected rather than dereferenced",
           starkecdsa_sign(NULL, 0, NULL, NULL) == STARKECDSA_ERROR_ARGUMENT, NULL);
 
     starkecdsa_public_key_free(publicKey);
+    starkecdsa_private_key_free(privateKey);
 }
 
 /* ------------------------------------------------------------- round trips */
@@ -433,6 +435,187 @@ static void testRoundTrips(void)
     starkecdsa_private_key_free(privateKey);
 }
 
+/* ------------------------------------------------ review negative cases */
+
+#if !defined(_WIN32)
+#include <pthread.h>
+
+typedef struct {
+    const starkecdsa_private_key *privateKey;
+    const starkecdsa_public_key *publicKey;
+    int failures;
+} ThreadWork;
+
+static void *signInThread(void *argument)
+{
+    ThreadWork *work = (ThreadWork *)argument;
+    static const unsigned char message[] = "shared context, many threads";
+    int round;
+    for (round = 0; round < 50; round++) {
+        starkecdsa_signature *signature = NULL;
+        if (starkecdsa_sign(message, sizeof(message) - 1, work->privateKey, &signature) != STARKECDSA_OK
+            || starkecdsa_verify(message, sizeof(message) - 1, signature, work->publicKey) != STARKECDSA_OK) {
+            work->failures++;
+        }
+        starkecdsa_signature_free(signature);
+    }
+    return NULL;
+}
+#endif
+
+static void testHardening(void)
+{
+    starkecdsa_private_key *privateKey = NULL;
+    starkecdsa_private_key *probe = NULL;
+    starkecdsa_public_key *publicKey = NULL;
+    starkecdsa_public_key *publicProbe = NULL;
+    starkecdsa_signature *signature = NULL;
+    unsigned char *wrongCurve = NULL;
+    unsigned char *foreignPoint = NULL;
+    unsigned char *der = NULL;
+    unsigned char *decoded = NULL;
+    unsigned char bytes[STARKECDSA_SECRET_BYTES];
+    unsigned char reference[STARKECDSA_SECRET_BYTES];
+    size_t wrongCurveLength = 0;
+    size_t foreignPointLength = 0;
+    size_t derLength = 0;
+    size_t decodedLength = 0;
+    char *hex = NULL;
+    /* r = n, the curve order, which no valid signature can carry; s = 1 */
+    static const unsigned char rEqualsOrder[] = {
+        0x30, 0x26, 0x02, 0x21, 0x00,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+        0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+        0x02, 0x01, 0x01
+    };
+
+    startGroup("Hardening");
+
+    starkecdsa_private_key_new(&privateKey);
+    starkecdsa_private_key_public_key(privateKey, &publicKey);
+    wrongCurve = readFile("wrongCurve.pem", &wrongCurveLength);
+    foreignPoint = readFile("foreignPoint.der", &foreignPointLength);
+    check("fixtures for the negative cases are readable", wrongCurve != NULL && foreignPoint != NULL, NULL);
+
+    /* key files: wrong curve, foreign point, structure */
+    probe = privateKey;
+    check("a prime256v1 private key is rejected as the wrong curve, and the out parameter is nulled",
+          starkecdsa_private_key_from_pem((const char *)wrongCurve, &probe) == STARKECDSA_ERROR_CURVE && probe == NULL, NULL);
+    probe = privateKey;
+    check("a key file whose public point belongs to another secret is rejected",
+          starkecdsa_private_key_from_der(foreignPoint, foreignPointLength, &probe) == STARKECDSA_ERROR_KEY_PAIR && probe == NULL, NULL);
+
+    starkecdsa_private_key_to_der(privateKey, &der, &derLength);
+    check("the key DER has the layout the structure tests assume",
+          derLength == 118 && der[39] == 0xa0 && der[48] == 0xa1, NULL);
+    {
+        unsigned char edited[128];
+        memcpy(edited, der, derLength);
+        edited[derLength] = 0x00;
+        check("a byte after the key SEQUENCE is rejected",
+              starkecdsa_private_key_from_der(edited, derLength + 1, &probe) == STARKECDSA_ERROR_ENCODING, NULL);
+        edited[1] = (unsigned char)(edited[1] + 1);
+        check("a byte inside the key SEQUENCE after [1] is rejected",
+              starkecdsa_private_key_from_der(edited, derLength + 1, &probe) == STARKECDSA_ERROR_ENCODING, NULL);
+
+        /* drop the [0] curve container: 9 bytes at offset 39 */
+        memcpy(edited, der, 39);
+        memcpy(edited + 39, der + 48, derLength - 48);
+        edited[1] = (unsigned char)(der[1] - 9);
+        check("a key file without its [0] curve OID is rejected rather than trusted",
+              starkecdsa_private_key_from_der(edited, derLength - 9, &probe) == STARKECDSA_ERROR_ENCODING, NULL);
+
+        /* drop the [1] public key container: 70 bytes at offset 48 */
+        memcpy(edited, der, 48);
+        edited[1] = (unsigned char)(der[1] - 70);
+        check("a key file without its [1] public point is rejected rather than trusted",
+              starkecdsa_private_key_from_der(edited, 48, &probe) == STARKECDSA_ERROR_ENCODING, NULL);
+
+        /* a foreign OID inside [0]: 1.3.132.0.7 instead of .10 */
+        memcpy(edited, der, derLength);
+        edited[47] = 0x07;
+        check("a key file naming another curve inside [0] is rejected",
+              starkecdsa_private_key_from_der(edited, derLength, &probe) == STARKECDSA_ERROR_CURVE, NULL);
+
+        /* a long-form length where the short form fits */
+        memcpy(edited + 1, der, derLength);
+        edited[0] = 0x30;
+        edited[1] = 0x81;
+        check("a non-minimal DER length is rejected",
+              starkecdsa_private_key_from_der(edited, derLength + 1, &probe) == STARKECDSA_ERROR_ENCODING, NULL);
+    }
+    starkecdsa_free_secret(der, derLength);
+
+    /* signature DER: an out-of-range integer is refused at parse time, not zeroed */
+    check("a signature with r equal to the curve order is refused at parse time",
+          starkecdsa_signature_from_der(rEqualsOrder, sizeof(rEqualsOrder), 0, &signature) != STARKECDSA_OK && signature == NULL, NULL);
+
+    /* base64 quantum */
+    check("base64 with 4k+1 data characters is rejected",
+          starkecdsaBytesFromBase64("QUJDR", &decoded, &decodedLength) == STARKECDSA_ERROR_ENCODING, NULL);
+    check("base64 missing its padding is rejected",
+          starkecdsaBytesFromBase64("QQ", &decoded, &decodedLength) == STARKECDSA_ERROR_ENCODING, NULL);
+    check("base64 with non-zero leftover bits is rejected",
+          starkecdsaBytesFromBase64("QR==", &decoded, &decodedLength) == STARKECDSA_ERROR_ENCODING, NULL);
+    check("base64 data after padding is rejected",
+          starkecdsaBytesFromBase64("QQ==QQ==", &decoded, &decodedLength) == STARKECDSA_ERROR_ENCODING, NULL);
+    check("canonical padded base64 decodes",
+          starkecdsaBytesFromBase64("QQ==", &decoded, &decodedLength) == STARKECDSA_OK && decodedLength == 1 && decoded[0] == 'A', NULL);
+    free(decoded);
+    decoded = NULL;
+    check("whitespace inside a base64 body is skipped",
+          starkecdsaBytesFromBase64("QU\nJD\r\n", &decoded, &decodedLength) == STARKECDSA_OK && decodedLength == 3 && memcmp(decoded, "ABC", 3) == 0, NULL);
+    free(decoded);
+
+    /* hex: python's int(x, 16) semantics */
+    memset(reference, 0, sizeof(reference));
+    reference[31] = 0x01;
+    check("a hex secret written without leading zeros denotes the same value",
+          starkecdsaBytesFromHex("1", bytes, sizeof(bytes)) == STARKECDSA_OK && memcmp(bytes, reference, sizeof(bytes)) == 0
+          && starkecdsaBytesFromHex("0001", bytes, sizeof(bytes)) == STARKECDSA_OK && memcmp(bytes, reference, sizeof(bytes)) == 0, NULL);
+    reference[30] = 0x0a;
+    reference[31] = 0xbc;
+    check("an odd number of hex digits reads as a leading half byte",
+          starkecdsaBytesFromHex("abc", bytes, sizeof(bytes)) == STARKECDSA_OK && memcmp(bytes, reference, sizeof(bytes)) == 0, NULL);
+    check("hex wider than the field is rejected",
+          starkecdsaBytesFromHex("10000000000000000000000000000000000000000000000000000000000000000", bytes, sizeof(bytes)) == STARKECDSA_ERROR_ENCODING, NULL);
+
+    /* misuse returns a code; nothing aborts */
+    publicProbe = publicKey;
+    check("an off-curve public point is refused with a code, and the out parameter is nulled",
+          starkecdsa_public_key_from_string(
+              "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+              &publicProbe) == STARKECDSA_ERROR_CURVE && publicProbe == NULL, NULL);
+    check("freeing a null secret is safe", (starkecdsa_free_secret(NULL, 32), 1), NULL);
+    check("a private key string is released through free_secret",
+          starkecdsa_private_key_to_string(privateKey, &hex) == STARKECDSA_OK && (starkecdsa_free_secret(hex, strlen(hex)), 1), NULL);
+
+#if !defined(_WIN32)
+    {
+        ThreadWork work[4];
+        pthread_t threads[4];
+        int index;
+        int failures = 0;
+        for (index = 0; index < 4; index++) {
+            work[index].privateKey = privateKey;
+            work[index].publicKey = publicKey;
+            work[index].failures = 0;
+            pthread_create(&threads[index], NULL, signInThread, &work[index]);
+        }
+        for (index = 0; index < 4; index++) {
+            pthread_join(threads[index], NULL);
+            failures += work[index].failures;
+        }
+        check("four threads sign and verify concurrently over the shared context", failures == 0, NULL);
+    }
+#endif
+
+    free(wrongCurve);
+    free(foreignPoint);
+    starkecdsa_public_key_free(publicKey);
+    starkecdsa_private_key_free(privateKey);
+}
+
 static void testLibrary(void)
 {
     startGroup("Library");
@@ -452,6 +635,7 @@ int main(void)
     testSignVerify();
     testMalformed();
     testRoundTrips();
+    testHardening();
 
     printf("\n%s\n", "------------------------------------------------------------");
     if (failed == 0) {

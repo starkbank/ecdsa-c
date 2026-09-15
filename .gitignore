@@ -11,3 +11,9 @@
 
 tests/run
 build/
+tests/run-shared
+exports.txt
+exports.map
+exports.unexpected
+*.pc
+*.d

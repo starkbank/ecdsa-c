@@ -53,7 +53,8 @@ int starkecdsaPemWrite(const char *label, const unsigned char *der, size_t derLe
     offset += (size_t)snprintf(buffer + offset, total - offset, "-----END %s-----\n", label);
     buffer[offset] = '\0';
 
-    free(base64);
+    /* the base64 may encode a private key */
+    starkecdsa_free_secret(base64, base64Length);
     *out = buffer;
     return STARKECDSA_OK;
 }
@@ -96,6 +97,6 @@ int starkecdsaPemRead(const char *pem, const char *label, unsigned char **der, s
     body[bodyLength] = '\0';
 
     status = starkecdsaBytesFromBase64(body, der, derLength);
-    free(body);
+    starkecdsa_free_secret(body, bodyLength);
     return status;
 }

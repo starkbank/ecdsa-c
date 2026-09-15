@@ -1,9 +1,13 @@
 /*
  * Just enough DER for the two shapes Stark key files use. This is not a
- * general ASN.1 parser and should not become one: every length is bounded and
- * every tag is checked, because these bytes arrive from disk.
+ * general ASN.1 parser and should not become one: every length is bounded,
+ * every tag is checked, every structure must consume exactly its input, and
+ * the two SEC1 containers are required rather than optional, because these
+ * bytes arrive from disk and the checks they carry are the ones that catch a
+ * wrong-curve key or a corrupted key pair.
  *
- * Private key, SEC1:
+ * Private key, SEC1 (RFC 5915 marks [0] and [1] OPTIONAL; this library
+ * requires both, as the Python reference effectively does):
  *   SEQUENCE { INTEGER 1, OCTET STRING secret,
  *              [0] { OID curve }, [1] { BIT STRING 00 04 X Y } }
  *
@@ -47,10 +51,14 @@ static int readLength(const unsigned char *der, size_t available, size_t *length
     if (count == 0 || count > 4 || available < count + 1) {
         return STARKECDSA_ERROR_ENCODING;
     }
+    /* DER requires the shortest form: no leading zero byte in a long form ... */
+    if (der[1] == 0x00) {
+        return STARKECDSA_ERROR_ENCODING;
+    }
     for (index = 0; index < count; index++) {
         value = (value << 8) | der[index + 1];
     }
-    /* DER requires the shortest form. */
+    /* ... and no long form for a value the short form could carry. */
     if (value < 128) {
         return STARKECDSA_ERROR_ENCODING;
     }
@@ -84,21 +92,36 @@ int starkecdsaDerReadTag(const unsigned char *der, size_t available, unsigned ch
     return STARKECDSA_OK;
 }
 
+/* The outer element must account for every byte it was handed. */
+static int readExact(const unsigned char *der, size_t available, unsigned char tag,
+                     const unsigned char **body, size_t *bodyLength)
+{
+    size_t consumed = 0;
+    int status = starkecdsaDerReadTag(der, available, tag, body, bodyLength, &consumed);
+    if (status != STARKECDSA_OK) {
+        return status;
+    }
+    if (consumed != available) {
+        return STARKECDSA_ERROR_ENCODING;
+    }
+    return STARKECDSA_OK;
+}
+
 int starkecdsaDerReadSequence(const unsigned char *der, size_t available,
                               const unsigned char **body, size_t *bodyLength)
 {
-    return starkecdsaDerReadTag(der, available, TAG_SEQUENCE, body, bodyLength, NULL);
+    return readExact(der, available, TAG_SEQUENCE, body, bodyLength);
 }
 
 /*
  * A BIT STRING holding a point carries a leading zero for the unused-bits
- * count, then the 0x04 uncompressed tag, then X and Y.
+ * count, then the 0x04 uncompressed tag, then X and Y - and nothing else.
  */
 static int readPointBitString(const unsigned char *der, size_t available, unsigned char *point)
 {
     const unsigned char *body = NULL;
     size_t bodyLength = 0;
-    int status = starkecdsaDerReadTag(der, available, TAG_BIT_STRING, &body, &bodyLength, NULL);
+    int status = readExact(der, available, TAG_BIT_STRING, &body, &bodyLength);
 
     if (status != STARKECDSA_OK) {
         return status;
@@ -110,14 +133,22 @@ static int readPointBitString(const unsigned char *der, size_t available, unsign
     return STARKECDSA_OK;
 }
 
+static int matchesCurveOid(const unsigned char *oidBody, size_t oidLength)
+{
+    return oidLength == sizeof(starkecdsaCurveOidDer) - 2
+        && memcmp(oidBody, starkecdsaCurveOidDer + 2, oidLength) == 0;
+}
+
 int starkecdsaDerReadPrivateKey(const unsigned char *der, size_t available,
                                 unsigned char *secret, unsigned char *pointOrNull, int *hasPoint)
 {
     const unsigned char *body = NULL;
     const unsigned char *cursor;
     const unsigned char *field = NULL;
+    const unsigned char *oidBody = NULL;
     size_t bodyLength = 0;
     size_t fieldLength = 0;
+    size_t oidLength = 0;
     size_t consumed = 0;
     size_t remaining;
     int status;
@@ -155,38 +186,46 @@ int starkecdsaDerReadPrivateKey(const unsigned char *der, size_t available,
     cursor += consumed;
     remaining -= consumed;
 
-    /* [0] curve OID, optional in the wild but always written by OpenSSL */
-    if (remaining > 0 && cursor[0] == TAG_CONTEXT_0) {
-        const unsigned char *oidBody = NULL;
-        size_t oidLength = 0;
-        status = starkecdsaDerReadTag(cursor, remaining, TAG_CONTEXT_0, &field, &fieldLength, &consumed);
-        if (status != STARKECDSA_OK) {
-            return status;
-        }
-        if (starkecdsaDerReadTag(field, fieldLength, TAG_OID, &oidBody, &oidLength, NULL) != STARKECDSA_OK) {
-            return STARKECDSA_ERROR_ENCODING;
-        }
-        if (oidLength != sizeof(starkecdsaCurveOidDer) - 2
-            || memcmp(oidBody, starkecdsaCurveOidDer + 2, oidLength) != 0) {
-            return STARKECDSA_ERROR_CURVE;
-        }
-        cursor += consumed;
-        remaining -= consumed;
+    /* [0] curve OID - required here. A missing or mistagged container would
+       otherwise skip the one check that catches a key from another curve. */
+    status = starkecdsaDerReadTag(cursor, remaining, TAG_CONTEXT_0, &field, &fieldLength, &consumed);
+    if (status != STARKECDSA_OK) {
+        starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
+        return status;
     }
+    if (readExact(field, fieldLength, TAG_OID, &oidBody, &oidLength) != STARKECDSA_OK) {
+        starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
+        return STARKECDSA_ERROR_ENCODING;
+    }
+    if (!matchesCurveOid(oidBody, oidLength)) {
+        starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
+        return STARKECDSA_ERROR_CURVE;
+    }
+    cursor += consumed;
+    remaining -= consumed;
 
-    /* [1] public key, which we use to check the pair agrees */
-    if (remaining > 0 && cursor[0] == TAG_CONTEXT_1 && pointOrNull != NULL) {
-        status = starkecdsaDerReadTag(cursor, remaining, TAG_CONTEXT_1, &field, &fieldLength, &consumed);
-        if (status != STARKECDSA_OK) {
-            return status;
-        }
+    /* [1] public key - required too, so the key-pair check can never be
+       skipped by leaving it out. */
+    status = starkecdsaDerReadTag(cursor, remaining, TAG_CONTEXT_1, &field, &fieldLength, &consumed);
+    if (status != STARKECDSA_OK) {
+        starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
+        return status;
+    }
+    if (pointOrNull != NULL) {
         status = readPointBitString(field, fieldLength, pointOrNull);
         if (status != STARKECDSA_OK) {
+            starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
             return status;
         }
         *hasPoint = 1;
     }
+    cursor += consumed;
+    remaining -= consumed;
 
+    if (remaining != 0) {
+        starkecdsaScrub(secret, STARKECDSA_SECRET_BYTES);
+        return STARKECDSA_ERROR_ENCODING;
+    }
     return STARKECDSA_OK;
 }
 
@@ -199,6 +238,7 @@ int starkecdsaDerReadPublicKey(const unsigned char *der, size_t available, unsig
     size_t algorithmLength = 0;
     size_t oidLength = 0;
     size_t consumed = 0;
+    size_t inner = 0;
     int status;
 
     status = starkecdsaDerReadSequence(der, available, &body, &bodyLength);
@@ -210,27 +250,24 @@ int starkecdsaDerReadPublicKey(const unsigned char *der, size_t available, unsig
         return status;
     }
 
-    /* algorithm identifier: id-ecPublicKey then the curve */
-    {
-        size_t inner = 0;
-        status = starkecdsaDerReadTag(algorithm, algorithmLength, TAG_OID, &oidBody, &oidLength, &inner);
-        if (status != STARKECDSA_OK) {
-            return status;
-        }
-        if (oidLength != sizeof(starkecdsaPublicKeyOidDer) - 2
-            || memcmp(oidBody, starkecdsaPublicKeyOidDer + 2, oidLength) != 0) {
-            return STARKECDSA_ERROR_ENCODING;
-        }
-        status = starkecdsaDerReadTag(algorithm + inner, algorithmLength - inner, TAG_OID, &oidBody, &oidLength, NULL);
-        if (status != STARKECDSA_OK) {
-            return status;
-        }
-        if (oidLength != sizeof(starkecdsaCurveOidDer) - 2
-            || memcmp(oidBody, starkecdsaCurveOidDer + 2, oidLength) != 0) {
-            return STARKECDSA_ERROR_CURVE;
-        }
+    /* algorithm identifier: id-ecPublicKey then the curve, and nothing else */
+    status = starkecdsaDerReadTag(algorithm, algorithmLength, TAG_OID, &oidBody, &oidLength, &inner);
+    if (status != STARKECDSA_OK) {
+        return status;
+    }
+    if (oidLength != sizeof(starkecdsaPublicKeyOidDer) - 2
+        || memcmp(oidBody, starkecdsaPublicKeyOidDer + 2, oidLength) != 0) {
+        return STARKECDSA_ERROR_ENCODING;
+    }
+    status = readExact(algorithm + inner, algorithmLength - inner, TAG_OID, &oidBody, &oidLength);
+    if (status != STARKECDSA_OK) {
+        return status;
+    }
+    if (!matchesCurveOid(oidBody, oidLength)) {
+        return STARKECDSA_ERROR_CURVE;
     }
 
+    /* the BIT STRING must be the last thing in the outer SEQUENCE */
     return readPointBitString(body + consumed, bodyLength - consumed, point);
 }
 

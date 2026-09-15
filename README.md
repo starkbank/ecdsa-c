@@ -17,10 +17,15 @@ FFI.
 ### Security
 
 The curve arithmetic is not ours. Signing and verification delegate to
-[libsecp256k1](https://github.com/bitcoin-core/secp256k1), the Bitcoin Core
-implementation, which is constant-time and independently audited. Writing 256
-bit modular arithmetic by hand is the single most dangerous thing a library
-like this can do, and we do not do it.
+[libsecp256k1](https://github.com/bitcoin-core/secp256k1), the library Bitcoin
+Core has run in production since 2015: constant-time by design in every
+operation that touches a secret, and among the most widely deployed and
+reviewed elliptic-curve code in existence. Writing 256 bit modular arithmetic
+by hand is the single most dangerous thing a library like this can do, and we
+do not do it. The one libsecp256k1 context is created once per process, under
+the platform's once-primitive, and randomized with system entropy so that the
+scalar multiplications are blinded. If that entropy is unavailable no context
+is created and every entry point fails with `STARKECDSA_ERROR_ENTROPY`.
 
 Nonces follow hedged RFC 6979: derived deterministically from the key and the
 message, with fresh system entropy mixed into the derivation as section 3.6
@@ -28,9 +33,33 @@ allows. A repeated message therefore does not repeat the signature, while a
 failing system RNG still cannot produce a repeated nonce. If the system RNG is
 unavailable, signing fails rather than falling back to something weaker.
 
-SHA-256 and base64 are vendored, at around two hundred lines of fixed-width
-integer work with no secret-dependent branching, checked against the NIST CAVP
-and RFC 4648 vectors. That keeps the library at one link-time dependency.
+SHA-256 and base64 are implemented here, at around two hundred lines of
+fixed-width integer work with no secret-dependent branching. SHA-256 is
+checked against the three FIPS 180-4 example digests, base64 against the
+RFC 4648 section 10 vectors, and both end to end against a signature OpenSSL
+produced. That keeps the library at one link-time dependency.
+
+Key files are read by a parser that accepts exactly the two shapes Stark key
+files use. It requires the curve OID and the public point to be present,
+checks the point against the secret, and rejects trailing bytes, non-minimal
+lengths, out-of-range signature integers and any base64 spelling other than
+the canonical one. A key issued for another curve fails with
+`STARKECDSA_ERROR_CURVE`, a corrupted pair with `STARKECDSA_ERROR_KEY_PAIR`.
+
+#### Limitations
+
+- Secrets live in ordinary heap memory. They are wiped when released, and every
+  buffer that carries key material must be released with
+  `starkecdsa_free_secret`, but nothing is locked against paging or core dumps.
+- The library is safe to call from several threads at once. Its only shared
+  state is the libsecp256k1 context, created exactly once and immutable after.
+- No entry point terminates the process. libsecp256k1's illegal-argument
+  callback is replaced by one that returns, so misuse comes back as a code.
+- Entropy comes from `BCryptGenRandom`, `arc4random_buf`, or `getrandom` with
+  `/dev/urandom` behind it. There is no user-supplied RNG and no fallback.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). Third-party
+licences are listed in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
 ### Installation
 
@@ -51,6 +80,13 @@ make test           # build and run the suite
 
 Point the build at a libsecp256k1 in a non-standard place with
 `make SECP256K1_PREFIX=/path/to/prefix`.
+
+On Windows there is no Makefile target. Compile the ten sources under
+`ellipticcurve/` with `/DSTARKECDSA_BUILD_SHARED /Iinclude /Iellipticcurve` and
+link `secp256k1.lib` and `bcrypt.lib`. Consumers of the DLL define
+`STARKECDSA_USE_SHARED` before including the header; every entry point is
+`__cdecl` on Win32, spelled out as `STARKECDSA_CALL` so a Delphi or .NET host
+can declare its imports to match.
 
 ### Curves
 
@@ -112,7 +148,7 @@ Windows the two can belong to different C runtimes.
 The header is deliberately plain. It declares no `long`, no `bool`, no inline
 functions and no structs that cross the boundary, so the types are the same
 width under LP64 and LLP64 and every object is an opaque pointer. A shared
-build exports only the thirty `starkecdsa_*` entry points; everything else,
+build exports only the thirty-one `starkecdsa_*` entry points; everything else,
 including libsecp256k1, stays hidden, so two Stark libraries in one process
 cannot collide.
 
@@ -129,6 +165,13 @@ openssl dgst -sha256 -sign privateKey.pem -out signatureDer.txt message.txt
 
 Note that a private key file written this way begins with an `EC PARAMETERS`
 block before the key itself, which this library skips.
+
+Two byte-level differences from the Python sibling are deliberate and inert:
+private key strings and DER here are always full width (64 hex characters, a
+32 byte OCTET STRING) where Python strips leading zero bytes, and PEM output
+here starts at the `-----BEGIN` line where Python's begins with a newline.
+Both libraries parse either form, so keys, signatures and derived public keys
+agree; only the serialized bytes of a key differ, for roughly one key in 256.
 
 ### Run unit tests
 

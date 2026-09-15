@@ -1,13 +1,14 @@
 /*
  * SHA-256, FIPS 180-4.
  *
- * Vendored rather than pulled from a dependency: it is fixed-width integer
+ * Implemented here rather than pulled from a dependency: it is fixed-width integer
  * work with no secret-dependent branching and official NIST vectors, so the
  * risk profile is nothing like modular arithmetic, and it keeps the library at
- * a single link-time dependency. tests/test.c checks it against the CAVP
- * vectors for the empty string, "abc" and one million 'a'.
+ * a single link-time dependency. tests/test.c checks it against the FIPS 180-4
+ * example digests for the empty string, "abc" and one million 'a'.
  */
 
+#include <stdint.h>
 #include <string.h>
 #include "../internal.h"
 
@@ -19,7 +20,7 @@
 #define SSIG0(x) (ROTR(x, 7) ^ ROTR(x, 18) ^ ((x) >> 3))
 #define SSIG1(x) (ROTR(x, 17) ^ ROTR(x, 19) ^ ((x) >> 10))
 
-static const unsigned int K[64] = {
+static const uint32_t K[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
     0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
     0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
@@ -30,18 +31,18 @@ static const unsigned int K[64] = {
     0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
-static void compress(unsigned int *state, const unsigned char *block)
+static void compress(uint32_t *state, const unsigned char *block)
 {
-    unsigned int w[64];
-    unsigned int a, b, c, d, e, f, g, h;
-    unsigned int temp1, temp2;
+    uint32_t w[64];
+    uint32_t a, b, c, d, e, f, g, h;
+    uint32_t temp1, temp2;
     int index;
 
     for (index = 0; index < 16; index++) {
-        w[index] = ((unsigned int)block[index * 4] << 24)
-                 | ((unsigned int)block[index * 4 + 1] << 16)
-                 | ((unsigned int)block[index * 4 + 2] << 8)
-                 | ((unsigned int)block[index * 4 + 3]);
+        w[index] = ((uint32_t)block[index * 4] << 24)
+                 | ((uint32_t)block[index * 4 + 1] << 16)
+                 | ((uint32_t)block[index * 4 + 2] << 8)
+                 | ((uint32_t)block[index * 4 + 3]);
     }
     for (index = 16; index < 64; index++) {
         w[index] = SSIG1(w[index - 2]) + w[index - 7] + SSIG0(w[index - 15]) + w[index - 16];
@@ -62,12 +63,12 @@ static void compress(unsigned int *state, const unsigned char *block)
     state[0] += a; state[1] += b; state[2] += c; state[3] += d;
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 
-    memset(w, 0, sizeof(w));
+    starkecdsaScrub(w, sizeof(w));
 }
 
 void starkecdsaSha256(const unsigned char *message, size_t length, unsigned char *digest)
 {
-    unsigned int state[8];
+    uint32_t state[8];
     unsigned char block[64];
     size_t remaining = length;
     const unsigned char *cursor = message;
@@ -86,7 +87,9 @@ void starkecdsaSha256(const unsigned char *message, size_t length, unsigned char
     /* Final block or blocks: the message tail, 0x80, zero padding, then the
        length in bits as a 64-bit big-endian value. */
     memset(block, 0, sizeof(block));
-    memcpy(block, cursor, remaining);
+    if (remaining > 0) {
+        memcpy(block, cursor, remaining);
+    }
     block[remaining] = 0x80;
     tail = remaining + 1;
 
@@ -112,6 +115,6 @@ void starkecdsaSha256(const unsigned char *message, size_t length, unsigned char
         digest[index * 4 + 3] = (unsigned char)(state[index] & 0xffu);
     }
 
-    memset(state, 0, sizeof(state));
-    memset(block, 0, sizeof(block));
+    starkecdsaScrub(state, sizeof(state));
+    starkecdsaScrub(block, sizeof(block));
 }

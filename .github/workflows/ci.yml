@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [development]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libsecp256k1
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y libsecp256k1-dev valgrind
+          else
+            brew install secp256k1
+          fi
+
+      - name: Static library and suite
+        run: make test
+
+      - name: Shared library, export list and public-API suite
+        run: make test-shared
+
+      - name: Address and undefined-behaviour sanitizers
+        run: |
+          make clean
+          make test CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
+                    TEST_CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+
+      - name: Valgrind
+        if: runner.os == 'Linux'
+        run: |
+          make clean
+          make test
+          valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite ./tests/run

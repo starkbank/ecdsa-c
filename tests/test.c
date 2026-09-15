@@ -283,6 +283,7 @@ static void testSignVerify(void)
 static void testMalformed(void)
 {
     starkecdsa_private_key *privateKey = NULL;
+    starkecdsa_private_key *rejected = NULL;
     starkecdsa_public_key *publicKey = NULL;
     starkecdsa_signature *signature = NULL;
     static const unsigned char zeroDer[] = {0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00};
@@ -303,21 +304,22 @@ static void testMalformed(void)
           starkecdsa_signature_from_der((const unsigned char *)"\x30\x44", 2, 0, &signature) != STARKECDSA_OK, NULL);
 
     check("a PEM with no key block is rejected",
-          starkecdsa_private_key_from_pem("not a pem at all", &privateKey) != STARKECDSA_OK, NULL);
+          starkecdsa_private_key_from_pem("not a pem at all", &rejected) != STARKECDSA_OK, NULL);
 
     check("a secret of zero is rejected",
-          starkecdsa_private_key_from_string("0000000000000000000000000000000000000000000000000000000000000000", &privateKey)
+          starkecdsa_private_key_from_string("0000000000000000000000000000000000000000000000000000000000000000", &rejected)
           != STARKECDSA_OK, NULL);
 
     /* N itself is out of range: valid secrets are [1, N-1]. */
     check("a secret equal to the curve order is rejected",
-          starkecdsa_private_key_from_string("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", &privateKey)
+          starkecdsa_private_key_from_string("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", &rejected)
           != STARKECDSA_OK, NULL);
 
     check("null arguments are rejected rather than dereferenced",
           starkecdsa_sign(NULL, 0, NULL, NULL) == STARKECDSA_ERROR_ARGUMENT, NULL);
 
     starkecdsa_public_key_free(publicKey);
+    starkecdsa_private_key_free(privateKey);
 }
 
 /* ------------------------------------------------------------- round trips */

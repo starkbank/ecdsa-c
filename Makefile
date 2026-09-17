@@ -24,12 +24,15 @@ SECP256K1_PREFIX ?= $(shell \
 
 # Mandatory flags stay apart from the user-facing CFLAGS: a command-line
 # CFLAGS overrides every makefile assignment, and losing -fvisibility=hidden
-# or -fPIC would silently widen the exported surface.
+# would silently widen the exported surface. -fPIC is mandatory too, and for
+# the static archive as well as the shared object: core-c and the SDKs link
+# libstarkecdsa.a into their own shared libraries, and ELF refuses non-PIC
+# objects there (PC32 relocation against secp256k1_nonce_function_rfc6979).
 CFLAGS ?= -O2
 TEST_CFLAGS ?= -O1 -g
 REQUIRED_CFLAGS = -std=c99 -pedantic -Wall -Wextra -Wshadow -Wconversion -Wstrict-prototypes \
           -Wmissing-prototypes -Wpointer-arith -Wwrite-strings -Wcast-qual \
-          -fvisibility=hidden -MMD -MP
+          -fvisibility=hidden -fPIC -MMD -MP
 ALL_CFLAGS = $(REQUIRED_CFLAGS) $(CFLAGS)
 CPPFLAGS += -Iinclude -Iellipticcurve -I$(SECP256K1_PREFIX)/include
 LDFLAGS += -L$(SECP256K1_PREFIX)/lib
@@ -74,7 +77,7 @@ all: libstarkecdsa.a
 libstarkecdsa.a: $(OBJECTS)
 	$(AR) rcs $@ $(OBJECTS)
 
-shared: ALL_CFLAGS += -fPIC -DSTARKECDSA_BUILD_SHARED
+shared: ALL_CFLAGS += -DSTARKECDSA_BUILD_SHARED
 shared: $(SOURCES) exports.txt exports.map
 	$(CC) $(ALL_CFLAGS) $(CPPFLAGS) $(SHARED_FLAGS) -o $(SHARED_NAME) $(SOURCES) $(LDFLAGS) $(LDLIBS)
 ifneq ($(UNAME),Darwin)

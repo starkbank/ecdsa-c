@@ -79,7 +79,7 @@ extern "C" {
 #define STARKECDSA_ABI_VERSION 1
 
 /* The release this header belongs to; starkecdsa_version() returns the same text. */
-#define STARKECDSA_VERSION "0.1.0"
+#define STARKECDSA_VERSION "0.1.1"
 
 typedef struct starkecdsa_private_key starkecdsa_private_key;
 typedef struct starkecdsa_public_key starkecdsa_public_key;

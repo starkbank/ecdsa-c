@@ -13,6 +13,8 @@ Given a version number MAJOR.MINOR.PATCH, increment:
 
 
 ## [Unreleased]
+
+## [0.1.1] - 2026-10-27
 ### Fixed
 - libstarkecdsa.a is built with -fPIC so shared libraries can link it on ELF
 
